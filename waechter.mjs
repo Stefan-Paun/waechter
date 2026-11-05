@@ -34,12 +34,18 @@ export function loadConfig(path) {
     if (!p || !existsSync(p)) continue
     let config
     try {
-      config = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(p, 'utf8')) }
+      const roh = JSON.parse(readFileSync(p, 'utf8'))
+      if (roh === null || typeof roh !== 'object' || Array.isArray(roh)) throw new Error('must be a JSON object')
+      config = { ...DEFAULT_CONFIG, ...roh }
       for (const [key, value] of Object.entries(config)) {
-        if (key === 'requiredEmailPattern') new RegExp(value, 'i')
+        if (key === 'requiredEmailPattern') {
+          if (typeof value !== 'string' || !value) throw new Error(`${key} must be a non-empty string`)
+          new RegExp(value, 'i')
+        }
         else if (Array.isArray(DEFAULT_CONFIG[key])) {
           if (!Array.isArray(value)) throw new Error(`${key} must be a list`)
           for (const s of value) {
+            if (typeof s !== 'string') throw new Error(`${key}: entries must be strings`)
             try { new RegExp(s, 'i') } catch (e) { throw new Error(`${key}: invalid regex "${s}" (${e.message})`) }
           }
         }

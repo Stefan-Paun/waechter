@@ -87,3 +87,8 @@ test('ungültige Regex in der Config wird im Grund genannt', () => {
   assert.equal(r.verdict.permissionDecision, 'ask')
   assert.match(r.verdict.permissionDecisionReason, /phonePatterns: invalid regex "\(offen"/)
 })
+test('Config mit falschem Typ wird gemeldet', () => {
+  for (const text of ['null', '[]', '{"phonePatterns":"x"}', '{"phonePatterns":[5]}', '{"requiredEmailPattern":""}']) {
+    assert.equal(lauf('git commit -m x', text).verdict.permissionDecision, 'ask', text)
+  }
+})
