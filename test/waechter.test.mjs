@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { scanDiff, check, DEFAULT_CONFIG } from '../waechter.mjs'
 
 const cfg = {
@@ -59,4 +60,30 @@ test('push of blocked branch / --all to public repo is denied', () => {
 test('unrelated commands pass', () => {
   assert.equal(check(bash('ls -la', '/'), cfg), undefined)
   assert.equal(check({ tool_name: 'Read', tool_input: {} }, cfg), undefined)
+})
+
+// Kaputte Config: nur git-Befehle fragen nach, alles andere bleibt unberührt.
+function lauf(command, configText) {
+  const dir = mkdtempSync(join(tmpdir(), 'waechter-cfg-'))
+  const pfad = join(dir, 'config.json')
+  writeFileSync(pfad, configText)
+  const out = execFileSync('node', [fileURLToPath(new URL('../waechter.mjs', import.meta.url))], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: dir }),
+    env: { ...process.env, WAECHTER_CONFIG: pfad },
+  }).toString()
+  return { pfad, verdict: out ? JSON.parse(out).hookSpecificOutput : undefined }
+}
+test('kaputte JSON-Config: ls bleibt unberührt, git commit fragt mit Hinweis', () => {
+  assert.equal(lauf('ls', '{ kaputt').verdict, undefined)
+  const r = lauf('git commit -m x', '{ kaputt')
+  assert.equal(r.verdict.permissionDecision, 'ask')
+  assert.match(r.verdict.permissionDecisionReason, /config\.json ungültig/)
+  assert.ok(r.verdict.permissionDecisionReason.includes(r.pfad))
+})
+test('ungültige Regex in der Config wird im Grund genannt', () => {
+  const text = JSON.stringify({ phonePatterns: ['(offen'] })
+  assert.equal(lauf('ls', text).verdict, undefined)
+  const r = lauf('git push', text)
+  assert.equal(r.verdict.permissionDecision, 'ask')
+  assert.match(r.verdict.permissionDecisionReason, /phonePatterns: invalid regex "\(offen"/)
 })
