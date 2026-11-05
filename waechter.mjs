@@ -31,7 +31,29 @@ export const DEFAULT_CONFIG = {
 export function loadConfig(path) {
   const candidates = [path, process.env.WAECHTER_CONFIG, join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'waechter', 'config.json')]
   for (const p of candidates) {
-    if (p && existsSync(p)) return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(p, 'utf8')) }
+    if (!p || !existsSync(p)) continue
+    let config
+    try {
+      const roh = JSON.parse(readFileSync(p, 'utf8'))
+      if (roh === null || typeof roh !== 'object' || Array.isArray(roh)) throw new Error('must be a JSON object')
+      config = { ...DEFAULT_CONFIG, ...roh }
+      for (const [key, value] of Object.entries(config)) {
+        if (key === 'requiredEmailPattern') {
+          if (typeof value !== 'string' || !value) throw new Error(`${key} must be a non-empty string`)
+          new RegExp(value, 'i')
+        }
+        else if (Array.isArray(DEFAULT_CONFIG[key])) {
+          if (!Array.isArray(value)) throw new Error(`${key} must be a list`)
+          for (const s of value) {
+            if (typeof s !== 'string') throw new Error(`${key}: entries must be strings`)
+            try { new RegExp(s, 'i') } catch (e) { throw new Error(`${key}: invalid regex "${s}" (${e.message})`) }
+          }
+        }
+      }
+    } catch (e) {
+      throw new Error(`config.json ungültig (${p}, ${e.message})`)
+    }
+    return config
   }
   return { ...DEFAULT_CONFIG }
 }
@@ -122,11 +144,18 @@ function checkPush(command, pos, cwd, config) {
   if (repo.alwaysAsk) return { decision: 'ask', reason: 'waechter: this remote is on the always-ask list. Really push?' }
 }
 
-export function check(input, config) {
+// Erkennt `git push`/`git commit` im Bash-Befehl; sonst undefined (Config wird dann gar nicht geladen).
+export function gitMatch(input) {
   if (input.tool_name !== 'Bash') return
   const command = String(input.tool_input?.command ?? '')
   const m = /\bgit\s+(?:-C\s+\S+\s+)?(push|commit)\b/.exec(command)
-  if (!m) return
+  return m ? { command, m } : undefined
+}
+
+export function check(input, config) {
+  const hit = gitMatch(input)
+  if (!hit) return
+  const { command, m } = hit
   const cwd = input.cwd || process.cwd()
   return m[1] === 'push' ? checkPush(command, m.index, cwd, config) : checkCommit(command, m.index, cwd, config)
 }
@@ -135,7 +164,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let verdict
   try {
     const input = JSON.parse(readFileSync(0, 'utf8'))
-    verdict = check(input, loadConfig())
+    if (gitMatch(input)) {
+      let config
+      try {
+        config = loadConfig()
+      } catch (e) {
+        verdict = { decision: 'ask', reason: `waechter: ${e.message}` }
+      }
+      if (config) verdict = check(input, config)
+    }
   } catch {
     verdict = { decision: 'ask', reason: 'waechter: check failed, please decide yourself.' }
   }

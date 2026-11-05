@@ -48,7 +48,7 @@ Requires Node 18+. Clone this repo, then add to `~/.claude/settings.json`:
 
 ## Configure
 
-Copy `config.example.json` to `~/.config/waechter/config.json` (or point `WAECHTER_CONFIG` at it) and edit. All keys are optional lists of regex strings; without a config only the 7 built-in secret patterns run and no repo counts as public.
+Copy `config.example.json` to `~/.config/waechter/config.json` (or point `WAECHTER_CONFIG` at it) and edit. All keys are optional lists of regex strings; without a config only the 7 built-in secret patterns run and no repo counts as public. If the file is broken (invalid JSON or regex), waechter asks only on `git commit`/`git push`, naming the path and error; other commands are left alone.
 
 ## Test
 

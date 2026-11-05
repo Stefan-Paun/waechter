@@ -17,7 +17,7 @@ Repo klonen und in `~/.claude/settings.json` einen `PreToolUse`-Hook mit Matcher
 
 ## Konfiguration
 
-`config.example.json` nach `~/.config/waechter/config.json` kopieren (oder `WAECHTER_CONFIG` setzen) und anpassen.
+`config.example.json` nach `~/.config/waechter/config.json` kopieren (oder `WAECHTER_CONFIG` setzen) und anpassen. Ist die Datei kaputt (ungültiges JSON oder ungültige Regex), fragt waechter nur bei `git commit`/`git push` nach und nennt Pfad und Fehler; andere Befehle bleiben unberührt.
 
 ## Tests
 
