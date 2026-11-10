@@ -83,6 +83,37 @@ export function gitContext(cwd, parsed, assigns = [], platform = process.platfor
   }
 }
 
+
+// git accepts any unambiguous prefix of a long option (`--mir` = `--mirror`, `--force-w` = `--force-with-lease`).
+// So long options are matched by prefix against the option list; a prefix that fits several options is unclear.
+const PUSH_LONG = [
+  '--all', '--branches', '--prune', '--mirror', '--delete', '--tags', '--follow-tags', '--no-follow-tags', '--dry-run', '--porcelain',
+  '--force', '--force-with-lease', '--force-if-includes', '--no-force-with-lease', '--no-force-if-includes',
+  '--repo', '--receive-pack', '--exec', '--thin', '--no-thin', '--verbose', '--quiet', '--progress', '--no-progress',
+  '--verify', '--no-verify', '--signed', '--no-signed', '--atomic', '--no-atomic', '--push-option', '--no-push-option',
+  '--recurse-submodules', '--no-recurse-submodules', '--set-upstream', '--no-set-upstream', '--ipv4', '--ipv6', '--help',
+]
+const COMMIT_LONG = [
+  '--all', '--author', '--date', '--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--template',
+  '--cleanup', '--pathspec-from-file', '--pathspec-file-nul', '--no-pathspec-file-nul', '--trailer', '--gpg-sign', '--no-gpg-sign',
+  '--amend', '--allow-empty', '--allow-empty-message', '--no-allow-empty-message', '--verify', '--no-verify', '--edit', '--no-edit',
+  '--signoff', '--no-signoff', '--interactive', '--patch', '--include', '--only', '--dry-run', '--short', '--branch', '--no-branch',
+  '--porcelain', '--long', '--null', '--verbose', '--no-verbose', '--quiet', '--status', '--no-status', '--reset-author',
+  '--untracked-files', '--ignore-submodules', '--no-post-rewrite', '--post-rewrite', '--column', '--no-column', '--ahead-behind', '--no-ahead-behind', '--renames', '--no-renames', '--find-renames', '--help',
+]
+
+/**
+ * Full name of a long option given as an exact name or a prefix of it. Exact names win.
+ * Unknown names come back unchanged; a prefix that fits several options is reported in `unclear`.
+ */
+export function resolveLong(name, list, unclear) {
+  if (list.includes(name)) return name
+  const hits = list.filter(o => o.startsWith(name))
+  if (hits.length === 1) return hits[0]
+  if (hits.length > 1) unclear.push(`option ${name} is an ambiguous abbreviation (${hits.join(', ')})`)
+  return name
+}
+
 const COMMIT_SHORT_WITH_ARG = new Set(['m', 'F', 'C', 'c', 't'])
 const COMMIT_LONG_WITH_ARG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--template', '--author', '--date', '--cleanup', '--pathspec-from-file', '--trailer', '--gpg-sign'])
 
@@ -98,7 +129,7 @@ export function parseCommitArgs(args) {
     if (t === '--') { afterDD = true; continue }
     if (t.startsWith('--')) {
       const eq = t.indexOf('=')
-      const name = eq > 0 ? t.slice(0, eq) : t
+      const name = resolveLong(eq > 0 ? t.slice(0, eq) : t, COMMIT_LONG, r.unclear)
       if (name === '--all') r.all = true
       if (name === '--author') { const v = eq > 0 ? t.slice(eq + 1) : args[++i]?.text; if (v !== undefined) r.author = v; continue }
       if (COMMIT_LONG_WITH_ARG.has(name)) { if (eq < 0 && name !== '--gpg-sign') i++; continue }
@@ -147,7 +178,7 @@ export function parsePushArgs(args) {
     if (t === '--') { afterDD = true; continue }
     if (t.startsWith('--')) {
       const eq = t.indexOf('=')
-      const name = eq > 0 ? t.slice(0, eq) : t
+      const name = resolveLong(eq > 0 ? t.slice(0, eq) : t, PUSH_LONG, r.unclear)
       const val = eq > 0 ? t.slice(eq + 1) : undefined
       if (name === '--force') r.forceKinds.push('--force')
       else if (name === '--force-with-lease' || name === '--force-if-includes') r.forceKinds.push(name)

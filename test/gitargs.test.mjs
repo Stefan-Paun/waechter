@@ -186,3 +186,38 @@ test('push args: variables are unclear', () => {
   assert.ok(push('git push $FLAGS origin main').unclear.length)
   assert.deepEqual(push('git push origin main').unclear, [])
 })
+
+// ---- abbreviated long options (git accepts any unambiguous prefix)
+test('push: abbreviated long options are resolved by unique prefix', () => {
+  assert.equal(push('git push --mir origin').mirror, true)
+  assert.equal(push('git push --mirro origin').mirror, true)
+  assert.equal(push('git push --al origin').all, true)
+  assert.equal(push('git push --bra origin').all, true) // --branches
+  assert.deepEqual(push('git push --force-w origin main').forceKinds, ['--force-with-lease'])
+  assert.deepEqual(push('git push --force-with origin main').forceKinds, ['--force-with-lease'])
+  assert.deepEqual(push('git push --force-i origin main').forceKinds, ['--force-if-includes'])
+  assert.equal(push('git push --tag origin').tags, true)
+  assert.equal(push('git push --del origin old').delete, true)
+  assert.equal(push('git push --prun origin').prune, true)
+  assert.equal(push('git push --rep=origin main').remote, 'origin')
+})
+test('push: exact names win and ambiguous prefixes are unclear', () => {
+  assert.deepEqual(push('git push --force origin main').forceKinds, ['--force'])
+  assert.equal(push('git push --force origin main').unclear.length, 0)
+  assert.ok(push('git push --forc origin main').unclear.length)
+  assert.ok(push('git push --re origin main').unclear.length)
+  assert.ok(push('git push --no- origin main').unclear.length)
+  assert.equal(push('git push --no-verify origin main').unclear.length, 0)
+  assert.equal(push('git push --no-force-with-lease origin main').forceKinds.length, 0)
+})
+test('commit: abbreviated long options are resolved by unique prefix', () => {
+  assert.equal(commit('git commit --amen -m x').all, false)
+  assert.equal(commit('git commit --all -m x').all, true)
+  assert.equal(commit('git commit --auth="A <a@example.org>" -m x').author, 'A <a@example.org>')
+  assert.equal(commit('git commit --mess hello').paths.length, 0) // value consumed, not a pathspec
+  assert.equal(commit('git commit --amend --no-verify -m x').unclear.length, 0)
+})
+test('commit: ambiguous prefix (--al could be --all or --allow-empty) is unclear', () => {
+  assert.ok(commit('git commit --al -m x').unclear.length)
+  assert.ok(commit('git commit --a -m x').unclear.length)
+})

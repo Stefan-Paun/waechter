@@ -62,6 +62,10 @@ const DENIED = [
   'git push origin main old',
   'git push --all',
   'git push --mirror origin',
+  'git push --mir origin',
+  'git push --mirro origin',
+  'git push --al',
+  'git push --force-w origin old',
   'git push origin "refs/heads/*:refs/heads/*"',
   'git push -u origin old',
   'FOO=1 git push origin old',
@@ -293,4 +297,13 @@ test('not a repo: nothing to check', () => {
   const none = mkdtempSync(join(tmpdir(), 'waechter-none-'))
   assert.equal(run('git push origin old', none), undefined)
   assert.equal(run('git commit -m x', none), undefined)
+})
+
+test('abbreviated options: --all/--mirror abbreviations, blockForcePush and ambiguity', () => {
+  assert.equal(decision('git push --al origin', pub), 'deny')
+  assert.equal(decision('git push --force-with origin main', pub, cfgForce), 'deny')
+  assert.equal(decision('git push --force-w origin main', pub, cfgForce), 'deny')
+  assert.equal(decision('git push --forc origin main', pub, cfgForce), 'deny') // ambiguous: unclear -> deny in public repos
+  assert.equal(decision('git push --force-w origin main', pub), undefined) // blockForcePush off
+  assert.equal(decision('git push --al', elsewhere), undefined) // private repo: nothing to block
 })
