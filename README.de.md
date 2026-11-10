@@ -15,6 +15,17 @@ Abhängigkeitsfreier [Claude-Code](https://claude.com/claude-code)-`PreToolUse`-
 
 Öffentliche Repos: blockiert (deny). Sonst: Rückfrage (ask).
 
+## Schreibprüfung (optional)
+
+Mit `writeCheck` prüft der Hook auch `Write`, `Edit`, `MultiEdit` und `NotebookEdit`, und zwar nur den **neuen** Inhalt (bei Änderungen jeden eingesetzten Text einzeln) mit denselben Mustern wie beim Commit, bevor die Datei geschrieben wird.
+
+- Greift nur für Dateien in einem Git-Repo, das als öffentlich gilt (`publicRepoPatterns`) und das **nicht** von git ignoriert ist (`git check-ignore`). Eine `.env` aus der `.gitignore` ist also erlaubt. Kein Repo oder privates Repo: nichts passiert.
+- `writeCheck`: `"aus"` (Standard), `"warnen"` (Rückfrage), `"blocken"` (verweigert, Claude sieht den Grund). **Standard ist `aus`, damit sich bestehende Installationen nicht verschärfen**; zusätzlich muss der Matcher des Hooks um `Write|Edit|MultiEdit|NotebookEdit` erweitert werden.
+- Ausnahmen: offensichtliche Platzhalter (`xxx`, `example`, `changeme`, `<...>`, lange Folgen gleicher Zeichen), Pfade aus `writeCheckIgnorePaths` (Regex auf den Repo-relativen Pfad, z. B. Test-Fixtures), Zeilen mit `waechter:erlaubt`, Binärinhalt und Inhalt über `writeCheckMaxBytes` (Standard 1000000).
+- Die Meldung nennt Musterart und Zeile; der Wert wird nie ausgegeben oder protokolliert, nur maskiert (erste 4 Zeichen + Länge). Sie weist auf Umgebungsvariable, ignorierte Datei oder Schlüsselbund hin.
+
+Matcher: `"matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit"`.
+
 ## Installation
 
 Repo klonen und in `~/.claude/settings.json` einen `PreToolUse`-Hook mit Matcher `Bash` eintragen, der `node $HOME/pfad/zu/waechter/waechter.mjs` aufruft (Beispiel siehe `README.md`).

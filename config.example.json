@@ -8,5 +8,8 @@
   "phonePatterns": ["\\+43[\\s\\d/-]{8,}\\d"],
   "requiredEmailPattern": "noreply\\.github\\.com",
   "maxDiffMegabytes": 20,
-  "skipScanPaths": ["**/package-lock.json", "**/*.min.js"]
+  "skipScanPaths": ["**/package-lock.json", "**/*.min.js"],
+  "writeCheck": "aus",
+  "writeCheckIgnorePaths": ["^test/fixtures/"],
+  "writeCheckMaxBytes": 1000000
 }

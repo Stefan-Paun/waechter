@@ -2,9 +2,9 @@
 // waechter: Claude Code PreToolUse hook that checks `git commit` and `git push`
 // for secrets, private identifiers and risky branches. No dependencies.
 import { execFileSync } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve, relative } from 'node:path'
 import { parseShell, trackDirs } from './shell.mjs'
 import { parseGit, parseCommitArgs, parsePushArgs, refNames, gitContext } from './gitargs.mjs'
 import { fileURLToPath } from 'node:url'
@@ -31,6 +31,9 @@ export const DEFAULT_CONFIG = {
   requiredEmailPattern: 'noreply\\.github\\.com', // authors/committers in public repos must match
   maxDiffMegabytes: 20, // diffs/logs larger than this (or too slow to read) are not scanned silently: waechter asks
   skipScanPaths: [], // git globs (e.g. "**/package-lock.json", "**/*.min.js") excluded from the commit scan; opt-in, default scans everything
+  writeCheck: 'aus', // Write/Edit check in public repos: 'aus' | 'warnen' (ask) | 'blocken' (deny)
+  writeCheckIgnorePaths: [], // regexes on the repo-relative path (test fixtures etc.) that are never checked
+  writeCheckMaxBytes: 1000000, // larger new content is skipped
 }
 
 export function loadConfig(path) {
@@ -43,13 +46,17 @@ export function loadConfig(path) {
 
 const rx = list => list.map(s => new RegExp(s, 'i'))
 
-export function scanDiff(diff, config, isPublic) {
-  const patterns = [
+export function buildPatterns(config, isPublic) {
+  return [
     ...SECRET_PATTERNS,
     ...rx(config.privateEmailPatterns).map(r => ['Private email address', r]),
     ...rx(config.phonePatterns).map(r => ['Phone number', r]),
     ...(isPublic ? rx(config.privatePathPatterns).map(r => ['Private path', r]) : []),
   ]
+}
+
+export function scanDiff(diff, config, isPublic) {
+  const patterns = buildPatterns(config, isPublic)
   const findings = []
   let file = '?'
   for (const line of diff.split('\n')) {
@@ -58,6 +65,29 @@ export function scanDiff(diff, config, isPublic) {
     for (const [name, re] of patterns) {
       const entry = `${name} in ${file}`
       if (re.test(line) && !findings.includes(entry)) findings.push(entry)
+    }
+  }
+  return findings
+}
+
+export const ALLOW_MARKS = ['waechter:erlaubt', 'waechter:allow']
+
+// Obvious placeholders: xxx, example, changeme, <...>, or a long run of one character.
+export function isPlaceholder(value) {
+  return /x{3,}|example|changeme|placeholder|dummy|<[^>]*>|(.)\1{9,}/i.test(value)
+}
+
+// Scans new text. Returns [{ kind, line, masked }]; the value itself is never returned.
+export function scanText(text, patterns) {
+  const findings = []
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (ALLOW_MARKS.some(m => line.includes(m))) continue
+    for (const [kind, re] of patterns) {
+      const m = re.exec(line)
+      if (!m || isPlaceholder(m[0])) continue
+      findings.push({ kind, line: i + 1, masked: `${m[0].slice(0, 4)}… (${m[0].length} Zeichen)` })
     }
   }
   return findings
@@ -88,6 +118,7 @@ function git(ctx, args) {
   } catch (e) {
     return e?.code === 'ENOBUFS' || e?.code === 'ETIMEDOUT' || e?.killed ? TOO_BIG : undefined
   }
+
 }
 
 /** Like git(), for calls whose output is small: a timeout aborts the check (the hook then asks). */
@@ -198,8 +229,69 @@ function checkPush(args, ctxIn, config) {
 
 const SEVERITY = { deny: 2, ask: 1 }
 
+// New content of a write/edit tool call: Write.content, Edit.new_string,
+// MultiEdit.edits[].new_string, NotebookEdit.new_source. Each piece is checked on its own.
+function newContents(input) {
+  const t = input.tool_input ?? {}
+  const pick = v => (typeof v === 'string' ? [v] : [])
+  switch (input.tool_name) {
+    case 'Write': return pick(t.content)
+    case 'Edit': return pick(t.new_string)
+    case 'MultiEdit': return Array.isArray(t.edits) ? t.edits.flatMap(e => pick(e?.new_string)) : []
+    case 'NotebookEdit': return pick(t.new_source)
+    default: return undefined
+  }
+}
+
+/** Repo at ctx.dir with its top-level directory, or undefined outside a repo. */
+function repoAt(ctx, config) {
+  const repo = repoInfo(ctx, config)
+  if (!repo) return undefined
+  const top = gitStr(ctx, ['rev-parse', '--show-toplevel'])
+  return top === undefined ? undefined : { ...repo, top }
+}
+
+function isIgnored(ctx, abs) {
+  return git(ctx, ['check-ignore', '-q', '--', abs]) === ''
+}
+
+const WRITE_HINT = 'Stattdessen: Wert aus einer Umgebungsvariable oder dem Schlüsselbund lesen, oder in eine von git ignorierte Datei (z. B. .env in .gitignore) schreiben. Bewusst erlaubte Zeilen mit "waechter:erlaubt" markieren.'
+
+function checkWrite(input, config) {
+  const mode = config.writeCheck
+  if (mode === 'aus' || mode === undefined) return
+  const pieces = newContents(input)
+  if (!pieces?.length) return
+  const t = input.tool_input ?? {}
+  const file = t.file_path ?? t.notebook_path
+  if (typeof file !== 'string' || !file) return
+  const abs = resolve(input.cwd || process.cwd(), file)
+  // nearest existing directory: the file (and its folders) may not exist yet
+  let dir = dirname(abs)
+  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir)
+  const repo = repoAt({ dir, config }, config)
+  if (!repo?.isPublic) return
+  // git reports the real path (macOS: /var -> /private/var), so resolve symlinks before comparing
+  const realAbs = join(realpathSync(dir), relative(dir, abs))
+  const rel = relative(repo.top, realAbs)
+  if (rel.startsWith('..')) return
+  if (rx(config.writeCheckIgnorePaths ?? []).some(r => r.test(rel))) return
+  const max = Number.isFinite(config.writeCheckMaxBytes) ? config.writeCheckMaxBytes : 1000000
+  const patterns = buildPatterns(config, true)
+  const findings = []
+  for (const text of pieces) {
+    if (text.length > max || text.includes('\0')) continue
+    findings.push(...scanText(text, patterns))
+  }
+  if (!findings.length) return
+  if (isIgnored({ dir: repo.top, config }, realAbs)) return // ignored by git: never lands in the repo (errors count as not ignored)
+  const list = findings.map(f => `${f.kind}, Zeile ${f.line} (${f.masked})`).join('; ')
+  const reason = `waechter: ${rel} liegt in einem öffentlichen Repo und würde enthalten: ${list}. ${WRITE_HINT}`
+  return { decision: mode === 'blocken' ? 'deny' : 'ask', reason }
+}
+
 export function check(input, config) {
-  if (input.tool_name !== 'Bash') return
+  if (input.tool_name !== 'Bash') return checkWrite(input, config)
   const command = String(input.tool_input?.command ?? '')
   const cwd = input.cwd || process.cwd()
   const parsed = parseShell(command, { home: homedir() })

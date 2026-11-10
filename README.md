@@ -37,6 +37,17 @@ Findings in a public repo are **denied**; in any other repo Claude Code **asks**
 
 Limitations: it parses the command string (it never executes or evaluates anything), so `git add && git commit` in one command sees the old stage (run them separately); aliases and scripts that call git are not detected.
 
+## Write check (optional)
+
+With `writeCheck` set, the hook also looks at `Write`, `Edit`, `MultiEdit` and `NotebookEdit` calls and scans only the **new** content (for edits: each inserted text on its own) with the same patterns as the commit check, *before* the file is written.
+
+- Applies only to files inside a git repo that counts as public (`publicRepoPatterns`) and that are **not** git-ignored (`git check-ignore`), so a `.env` listed in `.gitignore` is fine. No repo or a private repo: nothing happens.
+- `writeCheck`: `"aus"` (default, off), `"warnen"` (Claude Code asks you), `"blocken"` (denied, Claude sees the reason). **The default is `aus`, so existing installs do not get stricter**; you also have to add `Write|Edit|MultiEdit|NotebookEdit` to the hook matcher.
+- Skipped: obvious placeholders (`xxx`, `example`, `changeme`, `<...>`, long runs of one character), paths matching `writeCheckIgnorePaths` (regexes on the repo-relative path, e.g. test fixtures), lines containing `waechter:erlaubt` (or `waechter:allow`), binary content and content larger than `writeCheckMaxBytes` (default 1000000).
+- The message names the pattern and line; the value is never printed or logged, only masked (first 4 characters + length). It tells the agent to use an environment variable, a git-ignored file or the keychain instead.
+
+Matcher for the hook: `"matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit"`.
+
 ## Install
 
 Requires Node 18+. Clone this repo, then add to `~/.claude/settings.json`:
