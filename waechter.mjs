@@ -103,6 +103,13 @@ const tooBig = config => ({ decision: 'ask', reason: `waechter: diff too large o
 // Environment variables from `VAR=x git ...` that change what git would do.
 const GIT_ENV = new Set(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL'])
 
+// Keys of `git -c key=value` that are passed on to waechter's own git calls (identity, URL rewriting).
+const SAFE_CONFIG = /^(user|author|committer|url|remote)\./i
+// Set in every own git call: no fsmonitor command, no hooks.
+const HARDEN = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null']
+// Environment variables that make git start other programs or add config; removed for own git calls.
+const DANGEROUS_ENV = /^(GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|EDITOR|VISUAL|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|SSH_ASKPASS|GIT_PROXY_COMMAND|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_DIFF_OPTS|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_.*|GIT_CONFIG_VALUE_.*|GIT_CONFIG_SYSTEM|GIT_CONFIG|GIT_TRACE.*|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_ATTR_SOURCE)$/
+
 /**
  * Runs git the way the checked command would (same -C, --git-dir, --work-tree, -c, env).
  * Returns the trimmed output, undefined on an ordinary git error, or TOO_BIG when the output
@@ -112,16 +119,20 @@ function git(ctx, args) {
   const pre = ['-C', ctx.dir]
   if (ctx.gitDir) pre.push('--git-dir', ctx.gitDir)
   if (ctx.workTree) pre.push('--work-tree', ctx.workTree)
-  for (const c of ctx.configs ?? []) pre.push('-c', c)
+  // Only harmless -c keys from the checked command are passed on: `-c core.fsmonitor="cmd"` would run code in the hook.
+  for (const c of ctx.configs ?? []) if (SAFE_CONFIG.test(c)) pre.push('-c', c)
+  pre.push(...HARDEN)
+  const env = { ...process.env }
+  for (const k of Object.keys(env)) if (DANGEROUS_ENV.test(k)) delete env[k]
+  Object.assign(env, ctx.env, { GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' })
   try {
     return execFileSync('git', [...pre, ...args], {
       encoding: 'utf8', timeout: 10000, maxBuffer: Math.ceil(megabytes(ctx.config) * 1024 * 1024),
-      stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...ctx.env },
+      stdio: ['ignore', 'pipe', 'ignore'], env,
     }).trim()
   } catch (e) {
     return e?.code === 'ENOBUFS' || e?.code === 'ETIMEDOUT' || e?.killed ? TOO_BIG : undefined
   }
-
 }
 
 /** Like git(), for calls whose output is small: a timeout aborts the check (the hook then asks). */
@@ -166,13 +177,13 @@ function checkCommit(args, repo, config) {
   const ctx = repo.ctx
   const skips = (config.skipScanPaths ?? []).map(g => `:(exclude,glob)${g}`)
   const tail = skips.length ? ['--', '.', ...skips] : []
-  let diff = git(ctx, ['diff', '--cached', '--no-color', '-U0', ...tail]) ?? ''
+  let diff = git(ctx, ['diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv', '-U0', ...tail]) ?? ''
   if (diff === TOO_BIG) return tooBig(config)
   if (opts.all || opts.paths.length) {
     // -a: everything tracked; with paths: those files as they are in the working tree
     const limit = opts.all || !opts.paths.length ? tail : ['--', ...opts.paths, ...skips]
-    const head = git(ctx, ['diff', 'HEAD', '--no-color', '-U0', ...limit])
-    const more = head ?? git(ctx, ['diff', '--no-color', '-U0', ...limit]) ?? '' // no HEAD yet: plain diff
+    const head = git(ctx, ['diff', 'HEAD', '--no-color', '--no-ext-diff', '--no-textconv', '-U0', ...limit])
+    const more = head ?? git(ctx, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U0', ...limit]) ?? '' // no HEAD yet: plain diff
     if (more === TOO_BIG) return tooBig(config)
     diff += '\n' + more
   }
