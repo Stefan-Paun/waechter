@@ -307,3 +307,73 @@ test('abbreviated options: --all/--mirror abbreviations, blockForcePush and ambi
   assert.equal(decision('git push --force-w origin main', pub), undefined) // blockForcePush off
   assert.equal(decision('git push --al', elsewhere), undefined) // private repo: nothing to block
 })
+
+// ---- wrappers and programs that run git for the command
+const WRAPPED_DENIED = [
+  'caffeinate git push origin old',
+  'caffeinate -i git push origin old',
+  'caffeinate -t 60 -d git push origin old',
+  'arch -arm64 git push origin old',
+  'arch -x86_64 -e FOO=1 git push origin old',
+  'arch -arch arm64 git push origin old',
+  'nice -n 5 git push origin old',
+  'xargs git push origin old',
+  'exec git push origin old',
+  'find . -exec git push origin old \;',
+  'find . -maxdepth 0 -exec git push origin main \;',
+  `python3 -c "import os; os.system('git push origin old')"`,
+  `python3 -c 'import subprocess; subprocess.run(["git","push","origin","old"])'`,
+  `node -e "require('child_process').execSync('git commit -m x')"`,
+  'ssh host git push origin old',
+  'watch -n1 "git push origin old"',
+  'make -C . "git push"',
+]
+for (const cmd of WRAPPED_DENIED) test(`public repo denies wrapper/non-git: ${cmd}`, () => assert.equal(decision(cmd, pub), 'deny'))
+
+test('non-git programs that mention git push/commit ask in private repos', () => {
+  assert.equal(decision(`python3 -c "import os; os.system('git push origin main')"`, elsewhere), 'ask')
+  assert.equal(decision('find . -exec git push origin main \;', elsewhere), 'ask')
+})
+test('known wrappers are unpacked and checked as git, not blocked blindly', () => {
+  assert.equal(decision('caffeinate git push origin main', pub), undefined)
+  assert.equal(decision('arch -arm64 git push origin main', pub), undefined)
+  assert.equal(decision('caffeinate -i git push origin main', elsewhere), undefined)
+  assert.equal(decision('caffeinate git status', pub), undefined)
+})
+test('text-only programs and lookalikes do not trigger', () => {
+  assert.equal(decision('echo "git push origin old"', pub), undefined)
+  assert.equal(decision('grep -r "git commit" docs', pub), undefined)
+  assert.equal(decision('cat .git/config', pub), undefined)
+  assert.equal(decision('ls github-push', pub), undefined)
+  assert.equal(decision('gh pr create --title x --body y', pub), undefined)
+})
+
+// ---- aliases
+test('aliases are resolved and checked', () => {
+  const d = mk(PUBLIC)
+  g(d, 'config', 'alias.ps', 'push')
+  g(d, 'config', 'alias.po', 'push origin')
+  g(d, 'config', 'alias.sh', '!git push origin old')
+  g(d, 'config', 'alias.chain', 'ps')
+  g(d, 'config', 'alias.st', 'status')
+  g(d, 'config', 'alias.loop', 'loop')
+  assert.equal(decision('git ps origin old', d), 'deny')
+  assert.equal(decision('git po old', d), 'deny')
+  assert.equal(decision('git sh', d), 'deny')
+  assert.equal(decision('git chain origin old', d), 'deny')
+  assert.equal(decision('git -C ' + q(d) + ' ps origin old', '/'), 'deny')
+  assert.equal(decision('git ps origin main', d), undefined)
+  assert.equal(decision('git st', d), undefined)
+  assert.equal(decision('git loop', d), 'deny') // not resolvable: unclear -> deny in a public repo
+})
+test('unknown subcommand without an alias is unclear: ask in private, deny in public', () => {
+  assert.equal(decision('git nonsense', pub), 'deny')
+  assert.equal(decision('git nonsense', elsewhere), 'ask')
+  assert.equal(decision('git status', pub), undefined)
+  assert.equal(decision('git lfs pull', pub), undefined)
+})
+test('an alias that shadows a git command is ignored like git does', () => {
+  const d = mk(PUBLIC)
+  g(d, 'config', 'alias.status', 'push origin old') // git never uses this
+  assert.equal(decision('git status', d), undefined)
+})

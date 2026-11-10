@@ -324,6 +324,20 @@ function finalize(words, scope, ctx, depth) {
       while (i < words.length && lit(i)?.startsWith('-')) i += /^-[ioe]$/.test(lit(i)) ? 2 : 1
       continue
     }
+    if (name === 'caffeinate') {
+      i++
+      while (i < words.length && lit(i)?.startsWith('-')) i += /^-(t|w)$/.test(lit(i)) ? 2 : 1
+      continue
+    }
+    if (name === 'arch') {
+      i++
+      while (i < words.length && lit(i)?.startsWith('-')) {
+        const t = lit(i)
+        if (t === '-e' && i + 1 < words.length && isAssign(words[i + 1])) { assigns.push(words[i + 1].text); i += 2 }
+        else i += /^-(arch|d|e)$/.test(t) ? 2 : 1
+      }
+      continue
+    }
     if (name === 'xargs') {
       i++
       while (i < words.length && lit(i)?.startsWith('-')) i += /^-(I|n|P|L|d|E|s)$/.test(lit(i)) ? 2 : 1

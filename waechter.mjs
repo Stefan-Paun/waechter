@@ -304,6 +304,23 @@ function checkWrite(input, config) {
   return { decision: mode === 'blocken' ? 'deny' : 'ask', reason }
 }
 
+// Programs that only print or search text: `echo "git push"` is not a git call.
+const TEXT_ONLY = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'cat', 'head', 'tail', 'wc', 'man', 'which', 'whereis', 'type', 'true', 'false', 'test', '['])
+// A non-git program whose arguments mention `git ... push|commit` (python -c "os.system('git push')", find -exec git push \;, ssh host git push).
+const HIDDEN_GIT = /(?<![.\w-])git(?![\w.-])[\s\S]*?\b(push|commit)\b/i
+
+// Subcommands that git itself provides: an alias of the same name is ignored by git. Anything else may be an alias.
+const GIT_BUILTINS = new Set(`add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore check-ref-format checkout cherry cherry-pick
+clean clone column config count-objects credential describe diff difftool fetch filter-branch for-each-ref format-patch fsck gc grep gui help init
+instaweb log ls-files ls-remote ls-tree maintenance merge merge-base mergetool mv name-rev notes pack-refs prune pull range-diff rebase reflog remote
+repack replace request-pull rerere reset restore rev-list rev-parse revert rm scalar send-email shortlog show show-branch sparse-checkout stash status
+submodule subtree switch symbolic-ref tag update-index update-ref var verify-commit verify-tag version whatchanged worktree write-tree commit-tree
+commit-graph hash-object mktree unpack-file diff-tree diff-files diff-index read-tree checkout-index multi-pack-index fast-import fast-export
+interpret-trailers patch-id stripspace upload-pack receive-pack stage show-ref merge-file pack-objects index-pack bugreport hook check-mailmap
+update-server-info lfs filter-repo`.split(/\s+/))
+
+const MAX_ALIAS_DEPTH = 5
+
 export function check(input, config) {
   if (input.tool_name !== 'Bash') return checkWrite(input, config)
   const command = String(input.tool_input?.command ?? '')
@@ -312,14 +329,27 @@ export function check(input, config) {
   trackDirs(parsed.commands, cwd, { home: homedir() })
   const unclear = [...parsed.unclear]
   const verdicts = []
+  const hidden = [] // directories of non-git commands that mention git push/commit
 
-  for (const cmd of parsed.commands) {
-    if (cmd.name !== 'git') continue
-    const g = parseGit(cmd.argv)
+  const ctxOf = (dir, g, assigns) => ({ ...gitContext(dir, g, assigns), configs: g.configs, env: gitEnv(assigns), config })
+
+  function handleGit(argv, dir, assigns, depth, inherit) {
+    const g = parseGit(argv)
+    if (inherit) { // options given before an alias name still apply to the alias
+      g.dirs = [...inherit.dirs, ...g.dirs]
+      g.configs = [...inherit.configs, ...g.configs]
+      g.gitDir ??= inherit.gitDir
+      g.workTree ??= inherit.workTree
+    }
     unclear.push(...g.unclear)
-    if (g.sub !== 'push' && g.sub !== 'commit') continue
-    if (cmd.dir === null) { unclear.push('the directory is unknown after a cd with a variable or "cd -"'); continue }
-    const ctx = { ...gitContext(cmd.dir, g, cmd.assigns), configs: g.configs, env: gitEnv(cmd.assigns), config }
+    if (g.sub === null || g.info) return
+    if (g.sub !== 'push' && g.sub !== 'commit') {
+      if (GIT_BUILTINS.has(g.sub)) return
+      resolveAlias(g, dir, assigns, depth)
+      return
+    }
+    if (dir === null) { unclear.push('the directory is unknown after a cd with a variable or "cd -"'); return }
+    const ctx = ctxOf(dir, g, assigns)
     let v
     if (g.sub === 'push') {
       const pa = parsePushArgs(g.args)
@@ -332,6 +362,47 @@ export function check(input, config) {
       v = repo && checkCommit(g.args, repo, config)
     }
     if (v) verdicts.push(v)
+  }
+
+  // `git <alias>`: look the alias up (with the same protection flags as every own git call) and check what it expands to.
+  function resolveAlias(g, dir, assigns, depth) {
+    const sub = g.sub
+    if (dir === null) { unclear.push(`git ${sub}: directory unknown, so a possible alias cannot be resolved`); return }
+    if (depth >= MAX_ALIAS_DEPTH) { unclear.push(`git alias ${sub} is nested too deeply`); return }
+    const ctx = ctxOf(dir, g, assigns)
+    const value = /^[\w.-]+$/.test(sub) ? git(ctx, ['config', '--get', `alias.${sub}`]) : undefined
+    if (typeof value !== 'string' || !value.trim()) { unclear.push(`git ${sub} is not a git command and no alias of that name could be resolved`); return }
+    const rest = g.args.map(a => a.text).join(' ')
+    if (value.startsWith('!')) { // shell alias: runs in the top-level directory of the repo
+      const top = git(ctx, ['rev-parse', '--show-toplevel'])
+      const p = parseShell(`${value.slice(1)} ${rest}`, { home: homedir() })
+      unclear.push(...p.unclear)
+      trackDirs(p.commands, typeof top === 'string' && top ? top : dir, { home: homedir() })
+      processCommands(p.commands, depth + 1)
+      return
+    }
+    const p = parseShell(`git ${value}`, { home: homedir() })
+    const only = p.commands.length === 1 && p.commands[0].name === 'git' ? p.commands[0] : null
+    unclear.push(...p.unclear)
+    if (!only) { unclear.push(`git alias ${sub} does not expand to a single git command`); return }
+    handleGit([...only.argv, ...g.args], dir, assigns, depth + 1, g)
+  }
+
+  function processCommands(commands, depth) {
+    for (const cmd of commands) {
+      if (cmd.name === 'git') { handleGit(cmd.argv, cmd.dir, cmd.assigns, depth, null); continue }
+      if (TEXT_ONLY.has(cmd.name)) continue
+      const text = cmd.argv.map(w => w.text).join(' ')
+      if (HIDDEN_GIT.test(text)) hidden.push(cmd.dir ?? cwd)
+    }
+  }
+  processCommands(parsed.commands, 0)
+
+  for (const dir of hidden) {
+    const repo = repoInfo({ dir, config }, config)
+    const text = 'waechter: a program other than git gets "git ... push/commit" as an argument and may run it unseen'
+    if (repo?.isPublic) verdicts.push({ decision: 'deny', reason: `${text}. Public repo, blocked. Call git directly.` })
+    else verdicts.push({ decision: 'ask', reason: `${text}. Run it anyway?` })
   }
 
   const worst = verdicts.sort((a, b) => SEVERITY[b.decision] - SEVERITY[a.decision])[0]
