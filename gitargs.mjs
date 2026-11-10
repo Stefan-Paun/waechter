@@ -86,27 +86,32 @@ export function gitContext(cwd, parsed, assigns = [], platform = process.platfor
 const COMMIT_SHORT_WITH_ARG = new Set(['m', 'F', 'C', 'c', 't'])
 const COMMIT_LONG_WITH_ARG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--template', '--author', '--date', '--cleanup', '--pathspec-from-file', '--trailer', '--gpg-sign'])
 
-/** @returns {{all:boolean, paths:string[], unclear:string[]}} `all` = -a/--all, `paths` = pathspecs (commit only these) */
+/** @returns {{all:boolean, paths:string[], author?:string, unclear:string[]}} `all` = -a/--all, `paths` = pathspecs (commit only these) */
 export function parseCommitArgs(args) {
   const r = { all: false, paths: [], unclear: [] }
   let afterDD = false
+  const dyn = w => r.unclear.push(`commit argument "${w.text}" contains a variable`)
   for (let i = 0; i < args.length; i++) {
     const w = args[i]
     const t = w.text
-    if (w.dyn) r.unclear.push(`commit argument "${t}" contains a variable`)
-    if (afterDD || !t.startsWith('-') || t === '-') { r.paths.push(t); continue }
+    if (afterDD || !t.startsWith('-') || t === '-') { if (w.dyn) dyn(w); r.paths.push(t); continue }
     if (t === '--') { afterDD = true; continue }
     if (t.startsWith('--')) {
-      const name = t.split('=')[0]
+      const eq = t.indexOf('=')
+      const name = eq > 0 ? t.slice(0, eq) : t
       if (name === '--all') r.all = true
-      else if (COMMIT_LONG_WITH_ARG.has(name) && !t.includes('=') && name !== '--gpg-sign') i++
+      if (name === '--author') { const v = eq > 0 ? t.slice(eq + 1) : args[++i]?.text; if (v !== undefined) r.author = v; continue }
+      if (COMMIT_LONG_WITH_ARG.has(name)) { if (eq < 0 && name !== '--gpg-sign') i++; continue }
+      if (w.dyn) dyn(w)
       continue
     }
+    let takesValue = false
     for (let k = 1; k < t.length; k++) {
       const ch = t[k]
       if (ch === 'a') r.all = true
-      if (COMMIT_SHORT_WITH_ARG.has(ch)) { if (k === t.length - 1) i++; break }
+      if (COMMIT_SHORT_WITH_ARG.has(ch)) { takesValue = true; if (k === t.length - 1) i++; break }
     }
+    if (w.dyn && !takesValue) dyn(w)
   }
   return r
 }
