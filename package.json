@@ -4,6 +4,6 @@
   "description": "Claude Code PreToolUse hook that checks git commit/push for secrets, private emails and risky branches",
   "type": "module",
   "bin": { "waechter": "waechter.mjs" },
-  "scripts": { "test": "node --test test/waechter.test.mjs" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
   "license": "MIT"
 }

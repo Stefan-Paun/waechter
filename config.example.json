@@ -5,5 +5,8 @@
   "privateEmailPatterns": ["you@example\\.com"],
   "privatePathPatterns": ["/Users/yourname", "/home/yourname"],
   "phonePatterns": ["\\+43[\\s\\d/-]{8,}\\d"],
-  "requiredEmailPattern": "noreply\\.github\\.com"
+  "requiredEmailPattern": "noreply\\.github\\.com",
+  "writeCheck": "aus",
+  "writeCheckIgnorePaths": ["^test/fixtures/"],
+  "writeCheckMaxBytes": 1000000
 }
