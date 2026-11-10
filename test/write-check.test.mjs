@@ -114,3 +114,15 @@ test('runtime stays small', () => {
   for (let i = 0; i < 5; i++) check(write(d, 'x/a.js', big), cfg())
   assert.ok(Date.now() - t < 5000)
 })
+
+test('scanText: placeholder before a real key in the same line does not hide the key', () => {
+  const patterns = buildPatterns(cfg(), true)
+  const found = scanText(`a = "AKIA${'X'.repeat(16)}", b = "${KEY}"`, patterns)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].kind, 'AWS access key')
+  assert.equal(found[0].line, 1)
+  // two real keys in one line: both reported
+  assert.equal(scanText(`${KEY} ${GH}`, patterns).length, 2)
+  // only a placeholder: nothing
+  assert.equal(scanText(`AKIA${'X'.repeat(16)}`, patterns).length, 0)
+})

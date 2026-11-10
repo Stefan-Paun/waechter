@@ -85,9 +85,12 @@ export function scanText(text, patterns) {
     const line = lines[i]
     if (ALLOW_MARKS.some(m => line.includes(m))) continue
     for (const [kind, re] of patterns) {
-      const m = re.exec(line)
-      if (!m || isPlaceholder(m[0])) continue
-      findings.push({ kind, line: i + 1, masked: `${m[0].slice(0, 4)}… (${m[0].length} Zeichen)` })
+      // every hit in the line counts: a placeholder before a real key must not hide the key
+      const all = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')
+      for (const m of line.matchAll(all)) {
+        if (!m[0] || isPlaceholder(m[0])) continue
+        findings.push({ kind, line: i + 1, masked: `${m[0].slice(0, 4)}… (${m[0].length} Zeichen)` })
+      }
     }
   }
   return findings
