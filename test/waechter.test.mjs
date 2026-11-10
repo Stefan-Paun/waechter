@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { scanDiff, check, DEFAULT_CONFIG } from '../waechter.mjs'
 
 const cfg = {
@@ -59,4 +60,35 @@ test('push of blocked branch / --all to public repo is denied', () => {
 test('unrelated commands pass', () => {
   assert.equal(check(bash('ls -la', '/'), cfg), undefined)
   assert.equal(check({ tool_name: 'Read', tool_input: {} }, cfg), undefined)
+})
+
+function bigRepo(file, megabytes) {
+  const dir = mkdtempSync(join(tmpdir(), 'waechter-'))
+  const g = (...a) => execFileSync('git', ['-C', dir, ...a], { stdio: 'ignore' })
+  g('init', '-q'); g('remote', 'add', 'origin', 'git@github.com:example/private.git')
+  g('config', 'user.name', 't'); g('config', 'user.email', 't@users.noreply.github.com')
+  const lines = []
+  for (let n = 0; n < megabytes * 1024 * 1024; n += 41) lines.push(randomBytes(15).toString('hex'))
+  lines.push('key ' + fake.aws)
+  writeFileSync(join(dir, file), lines.join('\n') + '\n')
+  g('add', file)
+  return dir
+}
+
+test('staged file over maxDiffMegabytes asks instead of passing', () => {
+  const v = check(bash('git commit -m x', bigRepo('big.txt', 2)), { ...cfg, maxDiffMegabytes: 1 })
+  assert.equal(v?.decision, 'ask')
+  assert.match(v.reason, /too large or too slow to scan/)
+})
+test('same big file passes the size check with a higher limit (finding stays)', () => {
+  const v = check(bash('git commit -m x', bigRepo('big.txt', 2)), { ...cfg, maxDiffMegabytes: 20 })
+  assert.match(v?.reason, /AWS access key in big\.txt/)
+})
+test('skipScanPaths excludes a big lockfile from the scan', () => {
+  const d = bigRepo('package-lock.json', 2)
+  assert.equal(check(bash('git commit -m x', d), { ...cfg, maxDiffMegabytes: 1, skipScanPaths: ['**/package-lock.json'] }), undefined)
+  assert.equal(check(bash('git commit -m x', d), { ...cfg, maxDiffMegabytes: 1 })?.decision, 'ask')
+})
+test('small diff with fake key stays a finding under default config', () => {
+  assert.match(check(bash('git commit -m x', repo('git@github.com:example/private.git')), cfg)?.reason, /AWS access key/)
 })

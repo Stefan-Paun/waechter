@@ -19,6 +19,8 @@ Repo klonen und in `~/.claude/settings.json` einen `PreToolUse`-Hook mit Matcher
 
 `config.example.json` nach `~/.config/waechter/config.json` kopieren (oder `WAECHTER_CONFIG` setzen) und anpassen.
 
+Große Diffs: Ist der gestagte Diff (oder das Push-Log) größer als `maxDiffMegabytes` (Standard 20) oder braucht git länger als 10 s, geht der Wächter nicht stillschweigend durch, sondern fragt nach: „diff too large or too slow to scan, check manually“. Damit große Commits prüfbar bleiben, nimmt `skipScanPaths` (Standard leer, optional) Git-Globs wie `**/package-lock.json` oder `*.min.js`, die vom Commit-Scan ausgenommen werden. Übersprungene Pfade werden gar nicht geprüft, daher sparsam einsetzen.
+
 ## Tests
 
 `npm test` (Node 18+, keine Abhängigkeiten).

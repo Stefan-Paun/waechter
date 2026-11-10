@@ -26,6 +26,8 @@ export const DEFAULT_CONFIG = {
   privatePathPatterns: [], // regexes for paths (e.g. your home dir) not allowed in public repos
   phonePatterns: [], // regexes for phone numbers
   requiredEmailPattern: 'noreply\\.github\\.com', // authors/committers in public repos must match
+  maxDiffMegabytes: 20, // diffs/logs larger than this (or too slow to read) are not scanned silently: waechter asks
+  skipScanPaths: [], // git globs (e.g. "**/package-lock.json", "*.min.js") excluded from the commit scan; opt-in, default scans everything
 }
 
 export function loadConfig(path) {
@@ -58,11 +60,22 @@ export function scanDiff(diff, config, isPublic) {
   return findings
 }
 
-function git(dir, args) {
+const TOO_BIG = Symbol('too-big')
+const megabytes = config => Math.max(Number(config?.maxDiffMegabytes) || DEFAULT_CONFIG.maxDiffMegabytes, 0.001)
+
+// Returns the trimmed output, undefined on an ordinary git error, or TOO_BIG when the
+// output exceeded maxBuffer or git timed out (these must never count as "empty").
+function git(dir, args, config) {
   try {
-    return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-  } catch { return undefined }
+    return execFileSync('git', ['-C', dir, ...args], {
+      encoding: 'utf8', timeout: 10000, maxBuffer: Math.ceil(megabytes(config) * 1024 * 1024), stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch (e) {
+    return e?.code === 'ENOBUFS' || e?.code === 'ETIMEDOUT' || e?.killed ? TOO_BIG : undefined
+  }
 }
+
+const tooBig = config => ({ decision: 'ask', reason: `waechter: diff too large or too slow to scan (limit ${megabytes(config)} MB), check manually` })
 
 function repoInfo(command, gitPos, cwd, config) {
   const before = command.slice(0, gitPos)
@@ -85,7 +98,9 @@ function checkCommit(command, pos, cwd, config) {
   const repo = repoInfo(command, pos, cwd, config)
   if (!repo) return
   const all = /\bcommit\b[^&;|]*\s-[a-zA-Z]*a/.test(command.slice(pos))
-  const diff = git(repo.top, ['diff', all ? 'HEAD' : '--cached', '--no-color', '-U0']) ?? ''
+  const skips = (config.skipScanPaths ?? []).map(g => `:(exclude,glob)${g}`)
+  const diff = git(repo.top, ['diff', all ? 'HEAD' : '--cached', '--no-color', '-U0', ...(skips.length ? ['--', '.', ...skips] : [])], config) ?? ''
+  if (diff === TOO_BIG) return tooBig(config)
   const findings = scanDiff(diff, config, repo.isPublic)
   if (repo.isPublic) {
     const author = git(repo.top, ['var', 'GIT_AUTHOR_IDENT']) ?? ''
@@ -114,7 +129,8 @@ function checkPush(command, pos, cwd, config) {
     const blocked = sources.filter(s => config.blockedBranches.includes(s))
     if (blocked.length)
       return { decision: 'deny', reason: `waechter: branch ${blocked.join(', ')} is on the blocked list and must not be pushed.` }
-    const idents = git(repo.top, ['log', ...sources, '--not', '--remotes', '--format=%ae%n%ce']) ?? ''
+    const idents = git(repo.top, ['log', ...sources, '--not', '--remotes', '--format=%ae%n%ce'], config) ?? ''
+    if (idents === TOO_BIG) return tooBig(config)
     const bad = [...new Set(idents.split('\n').filter(a => a && !new RegExp(config.requiredEmailPattern, 'i').test(a)))]
     if (bad.length)
       return { decision: 'deny', reason: `waechter: new commits carry ${bad.join(', ')} instead of an address matching ${config.requiredEmailPattern}.` }

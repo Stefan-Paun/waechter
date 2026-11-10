@@ -5,5 +5,7 @@
   "privateEmailPatterns": ["you@example\\.com"],
   "privatePathPatterns": ["/Users/yourname", "/home/yourname"],
   "phonePatterns": ["\\+43[\\s\\d/-]{8,}\\d"],
-  "requiredEmailPattern": "noreply\\.github\\.com"
+  "requiredEmailPattern": "noreply\\.github\\.com",
+  "maxDiffMegabytes": 20,
+  "skipScanPaths": ["**/package-lock.json", "*.min.js"]
 }
