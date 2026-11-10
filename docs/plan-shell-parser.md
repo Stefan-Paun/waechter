@@ -25,3 +25,9 @@ options and refspecs are understood. Adds an opt-in `blockForcePush` switch.
 ## Not included
 No dependencies, no variable evaluation, no execution, no full shell interpreter,
 no alias resolution from repo config (only `-c alias.*` is flagged as unclear).
+
+## Status
+All five stages are done: `shell.mjs`, `gitargs.mjs`, integration in `waechter.mjs`,
+`blockForcePush`, CI workflow, READMEs, `CHANGELOG.md`. Known limits: no alias resolution
+from repo config, no `find -exec`/`parallel`, heredoc bodies with unquoted delimiter are only
+searched for `$( )`/backticks, `cd` in pipelines is treated like a normal `cd`.

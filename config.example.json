@@ -2,6 +2,7 @@
   "publicRepoPatterns": ["your-user/your-public-repo", "your-user\\.github\\.io"],
   "alwaysAskRepoPatterns": ["your-user/expensive-ci-repo"],
   "blockedBranches": ["old-history", "experiment-with-private-author"],
+  "blockForcePush": false,
   "privateEmailPatterns": ["you@example\\.com"],
   "privatePathPatterns": ["/Users/yourname", "/home/yourname"],
   "phonePatterns": ["\\+43[\\s\\d/-]{8,}\\d"],
