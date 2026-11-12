@@ -11,9 +11,13 @@ Abhängigkeitsfreier [Claude-Code](https://claude.com/claude-code)-`PreToolUse`-
 
 Öffentliche Repos: blockiert (deny). Sonst: Rückfrage (ask).
 
+Globale git-Optionen vor dem Subcommand werden verstanden: `git -c k=v commit`, `git --no-pager push`, `git -C "Ordner mit Leerzeichen" commit`, `--git-dir=` und `--work-tree=`. Ein `-c user.email=...` im Befehl zählt für die Autorprüfung.
+
 ## Installation
 
 Repo klonen und in `~/.claude/settings.json` einen `PreToolUse`-Hook mit Matcher `Bash` eintragen, der `node $HOME/pfad/zu/waechter/waechter.mjs` aufruft (Beispiel siehe `README.md`).
+
+Unter Windows einen absoluten Pfad mit Schrägstrichen eintragen, etwa `node C:/pfad/zu/waechter/waechter.mjs` (in `cmd` auch `node %USERPROFILE%\pfad\zu\waechter\waechter.mjs`).
 
 ## Konfiguration
 
