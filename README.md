@@ -27,7 +27,7 @@ In a public repo it also requires the author to match `requiredEmailPattern` (de
 
 Findings in a public repo are **denied**; in any other repo Claude Code **asks** you. If the hook itself fails, it asks.
 
-Global git options before the subcommand are understood: `git -c k=v commit`, `git --no-pager push`, `git -C "dir with spaces" commit`, `--git-dir=` and `--work-tree=`. A `-c user.email=...` on the command line counts for the author check.
+Global git options before the subcommand are understood: `git -c k=v commit`, `git --no-pager push`, `git -C "dir with spaces" commit`, `--git-dir=` and `--work-tree=`. A `-c user.email=...` on the command line counts for the author check. Every `git commit`/`git push` in one command line is checked.
 
 Limitations: it parses the command string, so `git add && git commit` in one command sees the old stage (run them separately); aliases and scripts that call git are not detected.
 
