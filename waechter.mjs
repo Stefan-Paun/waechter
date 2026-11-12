@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // Built-in secret patterns (checked on added diff lines only)
@@ -58,38 +58,103 @@ export function scanDiff(diff, config, isPublic) {
   return findings
 }
 
-function git(dir, args) {
+function git(pre, args) {
   try {
-    return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return execFileSync('git', [...pre, ...args], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch { return undefined }
 }
 
-function repoInfo(command, gitPos, cwd, config) {
-  const before = command.slice(0, gitPos)
-  const dashC = /\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/.exec(command.slice(gitPos))
-  const cds = [...before.matchAll(/(?:^|&&|;|\|\|)\s*cd\s+("[^"]+"|'[^']+'|\S+)/g)]
-  let dir = (dashC?.[1] ?? cds.at(-1)?.[1] ?? '.').replace(/^["']|["']$/g, '')
-  if (dir.startsWith('~')) dir = homedir() + dir.slice(1)
-  if (!dir.startsWith('/')) dir = join(cwd, dir)
-  const top = git(dir, ['rev-parse', '--show-toplevel'])
-  if (top === undefined) return undefined
-  const remote = git(top, ['remote', 'get-url', 'origin']) ?? ''
+// Splits the shell words that follow position `from`, up to the next command separator.
+// Understands single quotes, double quotes, backslash escapes and line continuations;
+// redirections (`2>&1`, `> file`, `<<EOF`) and comments are dropped. No expansions.
+function shellWords(s, from) {
+  const out = []
+  let cur = '', open = false, q = '', skip = false
+  const end = () => { if (open && !skip) out.push(cur); if (open) skip = false; cur = ''; open = false }
+  for (let i = from; i < s.length; i++) {
+    const c = s[i]
+    if (q) {
+      if (c === q) q = ''
+      else if (q === '"' && c === '\\' && '"\\$`'.includes(s[i + 1] ?? ' ')) cur += s[++i]
+      else cur += c
+    } else if (c === '"' || c === "'") { q = c; open = true }
+    else if (c === '\\' && s[i + 1] === '\n') i++
+    else if (c === '\\' && i + 1 < s.length) { cur += s[++i]; open = true }
+    else if (';&|\n()`'.includes(c) || (c === '#' && !open)) break
+    else if (c === '<' || c === '>') {
+      if (/^\d+$/.test(cur)) open = false // file descriptor number in front, as in `2>`
+      end(); skip = true
+      while ('<>&'.includes(s[i + 1] ?? ' ')) i++
+    }
+    else if (/\s/.test(c)) end()
+    else { cur += c; open = true }
+  }
+  end()
+  return out
+}
+
+// Global git options that take their value as a separate word
+const VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source'])
+
+// Finds every `git ... push|commit` in a command, skipping global options
+// (`-c k=v`, `--no-pager`, `-C <dir>`, `--git-dir=`, `--work-tree=` ...) before the subcommand.
+export function findAllGit(command) {
+  const found = []
+  for (const m of command.matchAll(/\bgit(?:\.exe)?(?=\s)/g)) {
+    const words = shellWords(command, m.index + m[0].length)
+    const g = { pos: m.index, dirs: [], conf: {} }
+    let i = 0
+    for (; i < words.length && words[i].startsWith('-'); i++) {
+      let name = words[i], value
+      const eq = name.indexOf('=')
+      if (name.startsWith('--') && eq > 0) [name, value] = [name.slice(0, eq), name.slice(eq + 1)]
+      else if (VALUE_OPTIONS.has(name)) value = words[++i] ?? ''
+      if (name === '-C') g.dirs.push(value)
+      else if (name === '--git-dir') g.gitDir = value
+      else if (name === '--work-tree') g.workTree = value
+      else if (name === '-c') {
+        const cut = value.indexOf('=')
+        if (cut > 0) g.conf[value.slice(0, cut).toLowerCase()] = value.slice(cut + 1)
+      }
+    }
+    // not anchored at the end: inside `bash -c "git commit"` the closing quote sticks to the word
+    const sub = /^(push|commit)(?![\w-])/.exec(words[i] ?? '')?.[1]
+    if (sub) found.push({ ...g, sub, rest: words.slice(i + 1) })
+  }
+  return found
+}
+export const findGit = command => findAllGit(command)[0]
+
+function repoInfo(command, g, cwd, config) {
+  const cds = [...command.slice(0, g.pos).matchAll(/(?:^|&&|;|\|\|)\s*cd\s+("[^"]+"|'[^']+'|\S+)/g)]
+  // like the shell and git do: a `cd` first, then every -C relative to the one before
+  let dir = cwd
+  for (const d of [cds.at(-1)?.[1].replace(/^["']|["']$/g, ''), ...g.dirs]) {
+    if (d) dir = resolve(dir, d.startsWith('~') ? homedir() + d.slice(1) : d)
+  }
+  const pre = ['-C', dir]
+  if (g.gitDir) pre.push(`--git-dir=${g.gitDir}`)
+  if (g.workTree) pre.push(`--work-tree=${g.workTree}`)
+  if (git(pre, ['rev-parse', '--show-toplevel']) === undefined) return undefined
+  const remote = git(pre, ['remote', 'get-url', 'origin']) ?? ''
   return {
-    top, remote,
+    pre, remote,
     isPublic: rx(config.publicRepoPatterns).some(r => r.test(remote)),
     alwaysAsk: rx(config.alwaysAskRepoPatterns).some(r => r.test(remote)),
   }
 }
 
-function checkCommit(command, pos, cwd, config) {
-  const repo = repoInfo(command, pos, cwd, config)
+function checkCommit(command, g, cwd, config) {
+  const repo = repoInfo(command, g, cwd, config)
   if (!repo) return
-  const all = /\bcommit\b[^&;|]*\s-[a-zA-Z]*a/.test(command.slice(pos))
-  const diff = git(repo.top, ['diff', all ? 'HEAD' : '--cached', '--no-color', '-U0']) ?? ''
+  const all = g.rest.some(w => w === '--all' || /^-[a-zA-Z]*a/.test(w))
+  const diff = git(repo.pre, ['diff', all ? 'HEAD' : '--cached', '--no-color', '-U0']) ?? ''
   const findings = scanDiff(diff, config, repo.isPublic)
   if (repo.isPublic) {
-    const author = git(repo.top, ['var', 'GIT_AUTHOR_IDENT']) ?? ''
-    if (!new RegExp(config.requiredEmailPattern, 'i').test(author)) findings.push(`author does not match ${config.requiredEmailPattern}`)
+    // `git -c user.email=... commit` overrides the configured identity, so those values must match too
+    const authors = [git(repo.pre, ['var', 'GIT_AUTHOR_IDENT']) ?? '', ...['user.email', 'author.email', 'committer.email'].map(k => g.conf[k]).filter(v => v !== undefined)]
+    const required = new RegExp(config.requiredEmailPattern, 'i')
+    if (!authors.every(a => required.test(a))) findings.push(`author does not match ${config.requiredEmailPattern}`)
   }
   if (!findings.length) return
   const text = `waechter: ${findings.join('; ')}`
@@ -98,14 +163,13 @@ function checkCommit(command, pos, cwd, config) {
     : { decision: 'ask', reason: `${text}. Commit anyway?` }
 }
 
-function checkPush(command, pos, cwd, config) {
-  const repo = repoInfo(command, pos, cwd, config)
+function checkPush(command, g, cwd, config) {
+  const repo = repoInfo(command, g, cwd, config)
   if (!repo) return
-  const part = command.slice(pos).split(/&&|;|\|\|/)[0] ?? ''
-  const words = part.trim().split(/\s+/)
-  const afterPush = words.slice(words.indexOf('push') + 1)
+  const afterPush = g.rest
   const args = afterPush.filter(w => !w.startsWith('-'))
-  const refs = args.slice(1).map(r => r.replace(/^\+/, '').split(':')[0] ?? '').filter(Boolean)
+  // a ref like `+--output=x` must never reach our own `git log` as an option
+  const refs = args.slice(1).map(r => r.replace(/^\+/, '').split(':')[0] ?? '').filter(r => r && !r.startsWith('-'))
   const sources = refs.length ? refs : ['HEAD']
 
   if (repo.isPublic) {
@@ -114,7 +178,7 @@ function checkPush(command, pos, cwd, config) {
     const blocked = sources.filter(s => config.blockedBranches.includes(s))
     if (blocked.length)
       return { decision: 'deny', reason: `waechter: branch ${blocked.join(', ')} is on the blocked list and must not be pushed.` }
-    const idents = git(repo.top, ['log', ...sources, '--not', '--remotes', '--format=%ae%n%ce']) ?? ''
+    const idents = git(repo.pre, ['log', ...sources, '--not', '--remotes', '--format=%ae%n%ce']) ?? ''
     const bad = [...new Set(idents.split('\n').filter(a => a && !new RegExp(config.requiredEmailPattern, 'i').test(a)))]
     if (bad.length)
       return { decision: 'deny', reason: `waechter: new commits carry ${bad.join(', ')} instead of an address matching ${config.requiredEmailPattern}.` }
@@ -125,10 +189,15 @@ function checkPush(command, pos, cwd, config) {
 export function check(input, config) {
   if (input.tool_name !== 'Bash') return
   const command = String(input.tool_input?.command ?? '')
-  const m = /\bgit\s+(?:-C\s+\S+\s+)?(push|commit)\b/.exec(command)
-  if (!m) return
   const cwd = input.cwd || process.cwd()
-  return m[1] === 'push' ? checkPush(command, m.index, cwd, config) : checkCommit(command, m.index, cwd, config)
+  // every commit/push in the command is checked; a deny wins over an ask
+  let verdict
+  for (const g of findAllGit(command)) {
+    const v = g.sub === 'push' ? checkPush(command, g, cwd, config) : checkCommit(command, g, cwd, config)
+    if (v?.decision === 'deny') return v
+    verdict ??= v
+  }
+  return verdict
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
